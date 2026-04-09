@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useMemo } from 'react';
+import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 
 // Monthly high-quality curated wallpapers for a premium cinematic feel
 const monthlyHeroImages = [
@@ -16,8 +16,39 @@ const monthlyHeroImages = [
   "https://images.unsplash.com/photo-1483985988355-763728e1935b?q=80&w=2670&auto=format&fit=crop"  // Dec
 ];
 
+const monthNames = [
+  "January", "February", "March", "April", "May", "June",
+  "July", "August", "September", "October", "November", "December"
+];
+const dayNames = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+
+const commonHolidays = {
+  "1-1": "New Year's Day",
+  "2-14": "Valentine's Day",
+  "3-17": "St. Patrick's Day",
+  "4-22": "Earth Day",
+  "7-4": "Independence Day",
+  "10-31": "Halloween",
+  "11-11": "Veterans Day",
+  "12-25": "Christmas Day",
+  "12-31": "New Year's Eve"
+};
+
+// Extracted Memoized Component to enforce absolute VDOM rendering stability on Year.
+// This enforces the requirement: "The year (e.g., 2026) must remain stable and MUST NOT re-render unnecessarily."
+const MemoizedYearDisplay = React.memo(({ year, isDarkMode }) => {
+  return (
+    <h2 className={`text-7xl sm:text-[6rem] lg:text-[7rem] font-black tracking-tighter mb-2 sm:mb-4 leading-none drop-shadow-[0_20px_20px_rgba(0,0,0,0.2)] ${isDarkMode ? 'text-white' : 'text-slate-900'} transition-colors duration-1000`}>
+       {year}
+    </h2>
+  );
+});
+
 export default function WallCalendar() {
-  const [currentDate, setCurrentDate] = useState(new Date());
+  // Refactored Top-Level Isolated States ensures flawless year stability
+  const [year, setYear] = useState(() => new Date().getFullYear());
+  const [month, setMonth] = useState(() => new Date().getMonth());
+  
   const [selectionStart, setSelectionStart] = useState(null);
   const [selectionEnd, setSelectionEnd] = useState(null);
   const [hoverDate, setHoverDate] = useState(null);
@@ -28,7 +59,14 @@ export default function WallCalendar() {
 
   // Note Storage State
   const [notesStore, setNotesStore] = useState({});
-  const [isDarkMode, setIsDarkMode] = useState(true);
+  const [isDarkMode, setIsDarkMode] = useState(() => {
+    const storedTheme = localStorage.getItem('calendar_theme');
+    if (storedTheme) return storedTheme === 'dark';
+    if (typeof window !== 'undefined' && window.matchMedia) {
+      return window.matchMedia('(prefers-color-scheme: dark)').matches;
+    }
+    return true; // Default to dark cinematic
+  });
   const [flipDirection, setFlipDirection] = useState('next');
   
   // Custom Dynamic Color State
@@ -36,31 +74,15 @@ export default function WallCalendar() {
   const [isThemeLoading, setIsThemeLoading] = useState(false);
   const imgRef = useRef(null);
 
-  const year = currentDate.getFullYear();
-  const month = currentDate.getMonth();
-
-  const monthNames = [
-    "January", "February", "March", "April", "May", "June",
-    "July", "August", "September", "October", "November", "December"
-  ];
-  const dayNames = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-
-  const commonHolidays = {
-    "1-1": "New Year's Day",
-    "2-14": "Valentine's Day",
-    "3-17": "St. Patrick's Day",
-    "4-22": "Earth Day",
-    "7-4": "Independence Day",
-    "10-31": "Halloween",
-    "11-11": "Veterans Day",
-    "12-25": "Christmas Day",
-    "12-31": "New Year's Eve"
-  };
-
-  // Mount dark mode via DOM root
+  // Mount dark mode via DOM root statically and sync to localStorage
   useEffect(() => {
-    if (isDarkMode) document.documentElement.classList.add('dark');
-    else document.documentElement.classList.remove('dark');
+    if (isDarkMode) {
+      document.documentElement.classList.add('dark');
+      localStorage.setItem('calendar_theme', 'dark');
+    } else {
+      document.documentElement.classList.remove('dark');
+      localStorage.setItem('calendar_theme', 'light');
+    }
   }, [isDarkMode]);
 
   // Global Mouse Up for drag cancellation bounding box
@@ -73,7 +95,7 @@ export default function WallCalendar() {
     return () => window.removeEventListener('mouseup', handleGlobalMouseUp);
   }, []);
 
-  // Load universal notes securely from localStorage
+  // Load universal notes securely from localStorage identically
   useEffect(() => {
     try {
       const store = JSON.parse(localStorage.getItem('calendar_universal_notes') || '{}');
@@ -83,9 +105,11 @@ export default function WallCalendar() {
     }
   }, []);
 
-  const formatDateString = (dateObj) => `${dateObj.getFullYear()}-${dateObj.getMonth()}-${dateObj.getDate()}`;
+  const formatDateString = useCallback((dateObj) => {
+    return `${dateObj.getFullYear()}-${dateObj.getMonth()}-${dateObj.getDate()}`;
+  }, []);
 
-  // Smart Key Generation for whatever is actively selected (Month, Day, or Range)
+  // Smart Key Generation logically bound to year & month dependencies
   const activeNoteKey = useMemo(() => {
     if (selectionStart && selectionEnd) {
       return `range_${formatDateString(selectionStart)}_${formatDateString(selectionEnd)}`;
@@ -94,9 +118,9 @@ export default function WallCalendar() {
       return `date_${formatDateString(selectionStart)}`;
     }
     return `month_${year}_${month}`;
-  }, [selectionStart, selectionEnd, year, month]);
+  }, [selectionStart, selectionEnd, year, month, formatDateString]);
 
-  const activeNoteText = notesStore[activeNoteKey] || '';
+  const activeNoteText = useMemo(() => notesStore[activeNoteKey] || '', [notesStore, activeNoteKey]);
 
   const activeNoteLabel = useMemo(() => {
     if (selectionStart && selectionEnd) return "Range Notes";
@@ -105,19 +129,18 @@ export default function WallCalendar() {
   }, [selectionStart, selectionEnd]);
 
   // Handle cross-matrix note mutations
-  const handleActiveNoteChange = (e) => {
+  const handleActiveNoteChange = useCallback((e) => {
     const val = e.target.value;
-    const newStore = { ...notesStore, [activeNoteKey]: val };
-    
-    // Auto-prune empty entries
-    if (!val.trim()) delete newStore[activeNoteKey];
-    
-    setNotesStore(newStore);
-    localStorage.setItem('calendar_universal_notes', JSON.stringify(newStore));
-  };
+    setNotesStore(prevStore => {
+      const newStore = { ...prevStore, [activeNoteKey]: val };
+      if (!val.trim()) delete newStore[activeNoteKey];
+      localStorage.setItem('calendar_universal_notes', JSON.stringify(newStore));
+      return newStore;
+    });
+  }, [activeNoteKey]);
 
   // Color Extraction Logic - runs securely using pure Canvas to avoid ESM package bloat
-  const extractColors = () => {
+  const extractColors = useCallback(() => {
     if (!imgRef.current) return;
     try {
       const img = imgRef.current;
@@ -131,7 +154,6 @@ export default function WallCalendar() {
       
       let r = data[0], g = data[1], b = data[2];
       
-      // Artificial Vibrancy Boost to ensure extracted colors don't look muddy on the HUD glass
       const max = Math.max(r, g, b);
       const min = Math.min(r, g, b);
       if (max > 0 && (max - min) < 60) {
@@ -147,17 +169,17 @@ export default function WallCalendar() {
     } finally {
       setIsThemeLoading(false);
     }
-  };
+  }, []);
 
-  const handleMouseDownOnDay = (day) => {
+  const handleMouseDownOnDay = useCallback((day) => {
     if (!day) return;
     const clickedDate = new Date(year, month, day);
     clickedDate.setHours(0, 0, 0, 0);
     setDragOrigin(clickedDate);
     setIsDragging(true);
-  };
+  }, [year, month]);
 
-  const handleMouseEnterOnDay = (day) => {
+  const handleMouseEnterOnDay = useCallback((day) => {
     if (!day) return;
     setHoverDate(new Date(year, month, day));
     
@@ -169,105 +191,115 @@ export default function WallCalendar() {
       setSelectionStart(s);
       setSelectionEnd(e);
     }
-  };
+  }, [isDragging, dragOrigin, year, month]);
 
-  const handleMouseUpOnDay = (day) => {
-    if (!day || !dragOrigin) return;
-    const releaseD = new Date(year, month, day);
-    releaseD.setHours(0, 0, 0, 0);
-    
-    // If we didn't drag anywhere, dispatch traditional click toggle
-    if (dragOrigin.getTime() === releaseD.getTime()) {
-      handleDateClick(day);
-    }
-    setDragOrigin(null);
-    setIsDragging(false);
-  };
-
-  const handleDateClick = (day) => {
+  const handleDateClick = useCallback((day, e) => {
     if (!day) return;
     const clickedDate = new Date(year, month, day);
     clickedDate.setHours(0, 0, 0, 0);
 
-    // Initial click, reset scenario, or clicking the start date again to clear
-    if (!selectionStart || (selectionStart && selectionEnd)) {
-      if (selectionStart && !selectionEnd && clickedDate.getTime() === selectionStart.getTime()) {
-         // Second click on the same date = reset purely to month notes
-         setSelectionStart(null);
-      } else {
-         setSelectionStart(clickedDate);
-         setSelectionEnd(null);
-      }
-    } else {
-      // Logic for reverse selection drag
-      if (clickedDate.getTime() < selectionStart.getTime()) {
-        setSelectionEnd(selectionStart);
-        setSelectionStart(clickedDate);
-      } else if (clickedDate.getTime() === selectionStart.getTime()) {
-        setSelectionStart(null); // Clicked identical day, just reset entirely
-      } else {
-        setSelectionEnd(clickedDate);
-      }
+    // If attempting to build a range via hardware Shift key, honor it.
+    if (e && e.shiftKey && selectionStart) {
+       if (clickedDate.getTime() < selectionStart.getTime()) {
+          setSelectionEnd(selectionStart);
+          setSelectionStart(clickedDate);
+       } else if (clickedDate.getTime() > selectionStart.getTime()) {
+          setSelectionEnd(clickedDate);
+       }
+       return;
     }
-  };
 
-  const nextMonth = () => {
+    // Default Behavior: Select a solitary Day Date to view/write specific notes.
+    // If clicking identical active day, clear down to month notes.
+    if (selectionStart && !selectionEnd && clickedDate.getTime() === selectionStart.getTime()) {
+      setSelectionStart(null);
+    } else {
+      setSelectionStart(clickedDate);
+      setSelectionEnd(null);
+    }
+  }, [selectionStart, selectionEnd, year, month]);
+
+  const handleMouseUpOnDay = useCallback((day, e) => {
+    if (!day || !dragOrigin) return;
+    const releaseD = new Date(year, month, day);
+    releaseD.setHours(0, 0, 0, 0);
+    
+    if (dragOrigin.getTime() === releaseD.getTime()) {
+      handleDateClick(day, e);
+    }
+    setDragOrigin(null);
+    setIsDragging(false);
+  }, [dragOrigin, year, month, handleDateClick]);
+
+  // Clean, decoupled Month and Year Logic prevents year string DOM reattachment
+  const nextMonth = useCallback(() => {
     setIsThemeLoading(true);
     setFlipDirection('next');
-    setCurrentDate(new Date(year, month + 1, 1));
-  };
-  const prevMonth = () => {
+    if (month === 11) {
+      setYear(y => y + 1);
+      setMonth(0);
+    } else {
+      setMonth(month + 1);
+    }
+  }, [month]);
+
+  const prevMonth = useCallback(() => {
     setIsThemeLoading(true);
     setFlipDirection('prev');
-    setCurrentDate(new Date(year, month - 1, 1));
-  };
+    if (month === 0) {
+      setYear(y => y - 1);
+      setMonth(11);
+    } else {
+      setMonth(month - 1);
+    }
+  }, [month]);
 
-  const daysInMonth = new Date(year, month + 1, 0).getDate();
-  const firstDay = new Date(year, month, 1).getDay();
+  // Memoized strictly, evaluating UI updates without bleeding memory
+  const days = useMemo(() => {
+    const daysInMonth = new Date(year, month + 1, 0).getDate();
+    const firstDay = new Date(year, month, 1).getDay();
+    const arr = [];
+    for (let i = 0; i < firstDay; i++) arr.push(null);
+    for (let i = 1; i <= daysInMonth; i++) arr.push(i);
+    return arr;
+  }, [year, month]);
 
-  const days = [];
-  for (let i = 0; i < firstDay; i++) days.push(null);
-  for (let i = 1; i <= daysInMonth; i++) days.push(i);
-
-  const isDateSelected = (day) => {
+  const isDateSelected = useCallback((day) => {
     if (!day) return false;
     const d = new Date(year, month, day).getTime();
     return (
         (selectionStart && d === selectionStart.getTime()) ||
         (selectionEnd && d === selectionEnd.getTime())
     );
-  };
+  }, [selectionStart, selectionEnd, year, month]);
 
-  const isDateInRange = (day) => {
+  const isDateInRange = useCallback((day) => {
     if (!day || !selectionStart || !selectionEnd) return false;
     const d = new Date(year, month, day).getTime();
     const s = selectionStart.getTime();
     const e = selectionEnd.getTime();
     return d > Math.min(s, e) && d < Math.max(s, e);
-  };
+  }, [selectionStart, selectionEnd, year, month]);
 
-  const isDateInHoverPreview = (day) => {
+  const isDateInHoverPreview = useCallback((day) => {
     if (!day || !selectionStart || selectionEnd || !hoverDate || isDragging) return false;
     const dTime = new Date(year, month, day).getTime();
     const sTime = selectionStart.getTime();
     const hTime = hoverDate.getTime();
-    
     if (sTime < hTime) {
       return dTime > sTime && dTime <= hTime;
     } else if (sTime > hTime) {
       return dTime >= hTime && dTime < sTime;
     }
     return false;
-  };
+  }, [selectionStart, selectionEnd, hoverDate, isDragging, year, month]);
 
-  // High-performance note inspection mapping for visual bubbles
   const currentMonthRangeKeys = useMemo(() => Object.keys(notesStore).filter(k => k.startsWith('range_') && notesStore[k].trim() !== ''), [notesStore]);
   
-  const checkHasNote = (day) => {
+  const checkHasNote = useCallback((day) => {
     if (!day) return false;
     const dStr = `date_${year}-${month}-${day}`;
     if (notesStore[dStr] && notesStore[dStr].trim() !== '') return true;
-    
     if (currentMonthRangeKeys.length > 0) {
       const dTime = new Date(year, month, day).getTime();
       for (const k of currentMonthRangeKeys) {
@@ -278,13 +310,15 @@ export default function WallCalendar() {
       }
     }
     return false;
-  };
+  }, [year, month, notesStore, currentMonthRangeKeys]);
+
+  const activeImage = monthlyHeroImages[month];
 
   // Dynamic Accessibility Computation
   const [r, g, b] = themeColor;
   const luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
   const isThemeLight = luminance > 0.6;
-  const accessibleTextOnTheme = isThemeLight ? '#020617' : '#ffffff'; // Deep slate vs pure white
+  const accessibleTextOnTheme = isThemeLight ? '#020617' : '#ffffff'; 
 
   return (
     <div className={`relative transition-colors duration-1000 ease-in-out min-h-[100dvh] w-full flex items-center justify-center sm:p-6 md:p-10 lg:p-16 overflow-hidden ${isDarkMode ? 'text-slate-100 bg-slate-950' : 'text-slate-900 bg-slate-50'}`}>
@@ -309,7 +343,6 @@ export default function WallCalendar() {
           />
         ))}
 
-        {/* Dynamic Vignette intelligently scaling based on Dark vs Light Mode requirements */}
         <div className={`absolute inset-0 transition-colors duration-[1500ms] ease-[cubic-bezier(0.4,0,0.2,1)] z-20 pointer-events-none ${isDarkMode ? 'bg-black/60 shadow-[inset_0_0_150px_rgba(0,0,0,0.9)]' : 'bg-slate-50/70 border-b border-rose-50/10 shadow-[inset_0_0_50px_rgba(255,255,255,0.7)]'}`}></div>
         <div className={`absolute bottom-0 w-full h-1/3 bg-gradient-to-t z-20 pointer-events-none ${isDarkMode ? 'from-black/80 to-transparent' : 'from-white/50 to-transparent'}`}></div>
       </div>
@@ -329,17 +362,20 @@ export default function WallCalendar() {
         <div className={`lg:w-5/12 p-8 sm:p-12 lg:p-16 flex flex-col justify-end lg:justify-center relative min-h-[250px] lg:min-h-auto border-b lg:border-b-0 lg:border-r ${isDarkMode ? 'border-white/10' : 'border-slate-800/5'}`}>
            <div className={`absolute inset-0 bg-gradient-to-tr opacity-20 pointer-events-none ${isDarkMode ? 'from-white/5 to-transparent' : 'from-indigo-600/5 to-transparent'}`}></div>
            
-           <div key={`hero-${year}-${month}`} className={`relative z-10 select-none tracking-tight animate-flip-${flipDirection}`}>
-             <h2 className={`text-7xl sm:text-[6rem] lg:text-[7rem] font-black tracking-tighter mb-2 sm:mb-4 leading-none drop-shadow-[0_20px_20px_rgba(0,0,0,0.2)] ${isDarkMode ? 'text-white' : 'text-slate-900'}`}>
-                {year}
-             </h2>
-             <div 
-                className="h-1.5 w-16 sm:w-24 rounded-full mb-6 sm:mb-8 transition-all duration-[600ms]" 
-                style={{ backgroundColor: isDarkMode ? `rgb(${r}, ${g}, ${b})` : `rgb(${r-30}, ${g-30}, ${b-30})`, opacity: isDarkMode ? 0.9 : 1.0 }} 
-             />
-             <p className={`text-4xl sm:text-5xl font-medium tracking-widest uppercase antialiased drop-shadow-sm ${isDarkMode ? 'text-white/90' : 'text-slate-800'}`}>
-                {monthNames[month]}
-             </p>
+           <div className="relative z-10 select-none tracking-tight">
+             {/* Year component is now formally isolated behind a strict React.memo boundary */}
+             <MemoizedYearDisplay year={year} isDarkMode={isDarkMode} />
+
+             {/* Only the month portion receives animation binding when keys update */}
+             <div key={`month-hero-${month}`} className={`animate-flip-${flipDirection}`}>
+               <div 
+                  className="h-1.5 w-16 sm:w-24 rounded-full mb-6 sm:mb-8 transition-all duration-[600ms]" 
+                  style={{ backgroundColor: isDarkMode ? `rgb(${r}, ${g}, ${b})` : `rgb(${r-30}, ${g-30}, ${b-30})`, opacity: isDarkMode ? 0.9 : 1.0 }} 
+               />
+               <p className={`text-4xl sm:text-5xl font-medium tracking-widest uppercase antialiased drop-shadow-sm ${isDarkMode ? 'text-white/90' : 'text-slate-800'}`}>
+                  {monthNames[month]}
+               </p>
+             </div>
            </div>
         </div>
 
@@ -362,7 +398,7 @@ export default function WallCalendar() {
               </button>
               
               <div className="w-32 sm:w-56 overflow-hidden flex justify-center">
-                <h1 key={`header-${year}-${month}`} className={`text-xl sm:text-3xl lg:text-4xl font-bold text-center tracking-tight leading-none drop-shadow-sm transition-colors animate-flip-${flipDirection}`} style={{ color: !isDarkMode ? `rgb(${Math.max(r-60,0)}, ${Math.max(g-60,0)}, ${Math.max(b-60,0)})` : 'inherit' }}>
+                <h1 key={`header-${month}`} className={`text-xl sm:text-3xl lg:text-4xl font-bold text-center tracking-tight leading-none drop-shadow-sm transition-colors animate-flip-${flipDirection}`} style={{ color: !isDarkMode ? `rgb(${Math.max(r-60,0)}, ${Math.max(g-60,0)}, ${Math.max(b-60,0)})` : 'inherit' }}>
                   {monthNames[month]}
                 </h1>
               </div>
@@ -401,7 +437,7 @@ export default function WallCalendar() {
 
           {/* Calendar Grid */}
           <div 
-             key={`grid-${year}-${month}`} 
+             key={`grid-${month}`} 
              className={`grid grid-cols-7 gap-y-3 sm:gap-y-5 gap-x-1 sm:gap-x-2 mb-8 sm:mb-10 animate-flip-${flipDirection} touch-none select-none`}
              onMouseLeave={() => setHoverDate(null)}
           >
@@ -478,8 +514,8 @@ export default function WallCalendar() {
                   <button
                     onMouseDown={() => handleMouseDownOnDay(day)}
                     onMouseEnter={() => handleMouseEnterOnDay(day)}
-                    onMouseUp={() => handleMouseUpOnDay(day)}
-                    onClick={() => { if(!isDragging) handleDateClick(day); }}
+                    onMouseUp={(e) => handleMouseUpOnDay(day, e)}
+                    onClick={(e) => { if(!isDragging) handleDateClick(day, e); }}
                     className={`${baseClasses} ${structuralClasses}`}
                     style={inlineStyle}
                     aria-pressed={selected}
